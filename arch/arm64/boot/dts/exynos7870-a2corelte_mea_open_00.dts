@@ -84,6 +84,39 @@
 		};
 	};
 
+	i2c@13890000 {
+		compatible = "samsung,s3c2440-i2c";
+		reg = <0x00 0x13890000 0x100>;
+		interrupts = <0x00 0x1ae 0x00>;
+		#address-cells = <0x01>;
+		#size-cells = <0x00>;
+		pinctrl-names = "default";
+		pinctrl-0 = <0x2c>;
+		clocks = <0x17 0x74 0x17 0x74>;
+		clock-names = "rate_i2c\0gate_i2c";
+		status = "okay";
+		samsung,i2c-max-bus-freq = <0x61a80>;
+
+		touchscreen@4b {
+			compatible = "synaptics,rmi4";
+			reg = <0x4b>;
+			pinctrl-names = "default\0on_state\0off_state";
+			pinctrl-0 = <0x2d>;
+			pinctrl-1 = <0x2d>;
+			pinctrl-2 = <0x2e>;
+			synaptics,irq_gpio = <0x28 0x06 0x00>;
+			synaptics,irq_type = <0x2008>;
+			synaptics,max_coords = <0x21c 0x3c0>;
+			synaptics,num_lines = <0x1d 0x10>;
+			synaptics,project_name = "A2core\0A260";
+			synaptics,ub-i2c-addr = <0x2c>;
+			synaptics,reset-delay-ms = <0x96>;
+			synaptics,firmware_name = "tsp_synaptics/td4101_a2corelte.fw";
+			synaptics,firmware_name_bl = "tsp_synaptics/td4101_a2corelte_recovery.fw";
+			synaptics,factory_item_version = <0x01>;
+		};
+	};
+
 	hsi2c@10510000 {
 		status = "okay";
 		samsung,hs-mode;
