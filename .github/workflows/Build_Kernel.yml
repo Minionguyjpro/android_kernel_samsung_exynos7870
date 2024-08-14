@@ -17,6 +17,8 @@ jobs:
       with:
         repository: lemniskett/AnyKernel3
         path: zipper
+    - name: Define ANDROID_MAJOR_VERSION
+      run: export ANDROID_MAJOR_VERSION=o
 
     - name: Android kernel build
       uses: lemniskett/android-kernel-actions@master
