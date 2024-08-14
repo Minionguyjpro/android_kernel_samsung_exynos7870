@@ -19,5 +19,5 @@ jobs:
           config: exynos7870-a2corelte_defconfig
           arch: arm64
           aosp-gcc: true
-          python-2.7: true
+          python-27: true
           release: true
