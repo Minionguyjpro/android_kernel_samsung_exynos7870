@@ -1,40 +1,23 @@
-name: Build on Tag
+name: CI
 
 on:
   workflow_dispatch:
-  push:
-    tags: '*'
 
 env:
   ANDROID_MAJOR_VERSION: o
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-kernel:
+    name: Build Kernel
+    runs-on: ubuntu-20.04
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
-
-    - name: Checkout zipper
-      uses: actions/checkout@v4
-      with:
-        repository: lemniskett/AnyKernel3
-        path: zipper
-        
-    - name: Define ANDROID_MAJOR_VERSION
-      run: export ANDROID_MAJOR_VERSION=o
-
-    - name: Android kernel build
-      uses: lemniskett/android-kernel-actions@master
-      id: build
-      with:
-        arch: arm64
-        compiler: gcc/9
-        defconfig: exynos7870-a2corelte_defconfig
-        image: Image
-
-    - name: Release build
-      uses: ncipollo/release-action@v1
-      with:
-        artifacts: ${{ steps.build.outputs.outfile }}
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: dabao1955/kernel_build_action@main
+        with:
+          kernel-url: https://github.com/${{ github.action_repository }}
+          kernel-branch: ${{ github.ref_name }}
+          config: exynos7870-a2corelte_defconfig
+          arch: arm64
+          aosp-gcc: true
+          python-2.7: true
+          release: true
