@@ -25,7 +25,7 @@ jobs:
 
     - name: Clone Google GCC Toolchain 4.9 (AArch64)
       run: |
-        git clone https://github.com/GrowtopiaJaw/aarch64-linux-android-4.9.git -b google --single-branch aarch64-linux-android-4.9
+        git clone https://github.com/KudProject/aarch64-linux-android-4.9
         export PATH=$GITHUB_WORKSPACE/aarch64-linux-android-4.9/bin:$PATH
 
     - name: Ensure build script is executable
