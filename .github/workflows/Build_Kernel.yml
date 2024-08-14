@@ -24,6 +24,7 @@ jobs:
       env:
         ANDROID_MAJOR_VERSION: o
         PYTHON_VERSION: 2
+        KCFLAGS: -Wno-error
       with:
         arch: arm64
         compiler: gcc/9
