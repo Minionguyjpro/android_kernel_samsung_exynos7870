@@ -15,7 +15,9 @@ jobs:
         uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/${{ github.action_repository }}
+          kernel-dir: .
           kernel-branch: ${{ github.ref_name }}
+          depth: 0
           config: exynos7870-a2corelte_defconfig
           arch: arm64
           aosp-gcc: false
