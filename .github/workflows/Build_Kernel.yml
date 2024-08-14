@@ -27,11 +27,9 @@ jobs:
     - name: Android kernel build
       uses: lemniskett/android-kernel-actions@master
       id: build
-      env:
-        NAME: Dark-Ages-Último
       with:
         arch: arm64
-        compiler: gcc/8
+        compile: gcc/9
         defconfig: exynos7870-a2corelte_defconfig
         image: Image
 
