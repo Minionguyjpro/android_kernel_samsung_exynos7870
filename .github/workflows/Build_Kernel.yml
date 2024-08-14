@@ -33,7 +33,7 @@ jobs:
 
     - name: Build kernel
       run: |
-        export CROSS_COMPILE=aarch64-linux-android-
+        export CROSS_COMPILE=aarch64-linux-android-4.9/bin/aarch64-linux-android-
         ./build_kernel.sh
 
     - name: Upload kernel image
