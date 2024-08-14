@@ -1,25 +1,36 @@
-name: CI
+name: Build on Tag
 
 on:
-  workflow_dispatch:
-
-env:
-  ANDROID_MAJOR_VERSION: o
+  push:
+    tags: '*'
 
 jobs:
-  build-kernel:
-    name: Build Kernel
-    runs-on: ubuntu-20.04
+  build:
+    runs-on: ubuntu-latest
     steps:
-      - name: Build
-        uses: dabao1955/kernel_build_action@v1.6.2
-        with:
-          kernel-url: https://github.com/${{ github.action_repository }}
-          kernel-dir: .
-          kernel-branch: ${{ github.ref_name }}
-          config: exynos7870-a2corelte_defconfig
-          arch: arm64
-          aosp-gcc: false
-          android-ndk: true
-          python-27: true
-          release: true
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+
+    - name: Checkout zipper
+      uses: actions/checkout@v4
+      with:
+        repository: lemniskett/AnyKernel3
+        path: zipper
+
+    - name: Android kernel build
+      uses: lemniskett/android-kernel-actions@master
+      id: build
+      env:
+        ANDROID_MAJOR_VERSION: o
+        PYTHON_VERSION: 2
+      with:
+        arch: arm64
+        compiler: gcc/9
+        defconfig: exynos7870-a2corelte_defconfig
+        image: Image
+
+    - name: Release build
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: ${{ steps.build.outputs.outfile }}
+        token: ${{ secrets.GITHUB_TOKEN }}
