@@ -28,7 +28,7 @@ jobs:
       with:
         arch: arm64
         compiler: gcc/10
-        defconfig: exynos7870-a2corelte_defconfig ANDROID_MAJOR_VERSION=o
+        defconfig: ANDROID_MAJOR_VERSION=o exynos7870-a2corelte_defconfig
         image: Image
 
     - name: Release build
