@@ -31,7 +31,7 @@ jobs:
         NAME: Dark-Ages-Último
       with:
         arch: arm64
-        compiler: gcc/9
+        compiler: gcc/8
         defconfig: exynos7870-a2corelte_defconfig
         image: Image
 
