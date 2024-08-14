@@ -47,3 +47,4 @@ jobs:
       with:
         artifacts: arch/arm64/boot/Image
         token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
