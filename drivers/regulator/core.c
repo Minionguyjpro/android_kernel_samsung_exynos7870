@@ -1000,32 +1000,31 @@ static int set_machine_constraints(struct regulator_dev *rdev,
 
 	ret = machine_constraints_voltage(rdev, rdev->constraints);
 	if (ret != 0)
-		goto out;
+		return ret;
 
 	ret = machine_constraints_current(rdev, rdev->constraints);
 	if (ret != 0)
-		goto out;
+		return ret;
 
 	/* do we need to setup our suspend state */
 	if (rdev->constraints->initial_state) {
 		ret = suspend_prepare(rdev, rdev->constraints->initial_state);
 		if (ret < 0) {
 			rdev_err(rdev, "failed to set suspend state\n");
-			goto out;
+			return ret;
 		}
 	}
 
 	if (rdev->constraints->initial_mode) {
 		if (!ops->set_mode) {
 			rdev_err(rdev, "no set_mode operation\n");
-			ret = -EINVAL;
-			goto out;
+			return -EINVAL;
 		}
 
 		ret = ops->set_mode(rdev, rdev->constraints->initial_mode);
 		if (ret < 0) {
 			rdev_err(rdev, "failed to set initial mode: %d\n", ret);
-			goto out;
+			return ret;
 		}
 	}
 
@@ -1036,7 +1035,7 @@ static int set_machine_constraints(struct regulator_dev *rdev,
 		ret = _regulator_do_enable(rdev);
 		if (ret < 0 && ret != -EINVAL) {
 			rdev_err(rdev, "failed to enable\n");
-			goto out;
+			return ret;
 		}
 	}
 
@@ -1045,16 +1044,12 @@ static int set_machine_constraints(struct regulator_dev *rdev,
 		ret = ops->set_ramp_delay(rdev, rdev->constraints->ramp_delay);
 		if (ret < 0) {
 			rdev_err(rdev, "failed to set ramp_delay\n");
-			goto out;
+			return ret;
 		}
 	}
 
 	print_constraints(rdev);
 	return 0;
-out:
-	kfree(rdev->constraints);
-	rdev->constraints = NULL;
-	return ret;
 }
 
 /**
@@ -1269,13 +1264,6 @@ static void regulator_supply_alias(struct device **dev, const char **supply)
 		*dev = map->alias_dev;
 		*supply = map->alias_supply;
 	}
-}
-
-static int _regulator_get_disable_time(struct regulator_dev *rdev)
-{
-	if (!rdev->desc->ops->disable_time)
-		return rdev->desc->disable_time;
-	return rdev->desc->ops->disable_time(rdev);
 }
 
 static struct regulator_dev *regulator_dev_lookup(struct device *dev,
@@ -1952,16 +1940,7 @@ EXPORT_SYMBOL_GPL(regulator_enable);
 
 static int _regulator_do_disable(struct regulator_dev *rdev)
 {
-	int ret, delay;
-
-	/* Query before disabling in case configuration dependent.  */
-	ret = _regulator_get_disable_time(rdev);
-	if (ret >= 0) {
-		delay = ret;
-	} else {
-		rdev_warn(rdev, "disable_time() failed: %d\n", ret);
-		delay = 0;
-	}
+	int ret;
 
 	trace_regulator_disable(rdev_get_name(rdev));
 
@@ -1984,18 +1963,6 @@ static int _regulator_do_disable(struct regulator_dev *rdev)
 	 */
 	if (rdev->desc->off_on_delay)
 		rdev->last_off_jiffy = jiffies;
-
-	/* Allow the regulator to ramp; it would be useful to extend
-	 * this for bulk operations so that the regulators can ramp
-	 * together.  */
-	trace_regulator_disable_delay(rdev_get_name(rdev));
-
-	if (delay >= 1000) {
-		mdelay(delay / 1000);
-		udelay(delay % 1000);
-	} else if (delay) {
-		udelay(delay);
-	}
 
 	trace_regulator_disable_complete(rdev_get_name(rdev));
 
@@ -2447,38 +2414,6 @@ int regulator_is_supported_voltage(struct regulator *regulator,
 }
 EXPORT_SYMBOL_GPL(regulator_is_supported_voltage);
 
-/**
- * regulator_get_max_support_voltage - standard get_max_supporting_volt()
- *
- * @rdev: Regulator to operate on
- *
- * This function returns maximum supporting voltage of given regulator.
- * When one regulator buck (or ldo) is shared between multiple consumers,
- * any consumer can get maximum supporting voltage from this function,
- * lust like sysfs supports max_uV.
- */
-int regulator_get_max_support_voltage(struct regulator *regulator)
-{
-	return regulator->rdev->constraints->max_uV;
-}
-EXPORT_SYMBOL_GPL(regulator_get_max_support_voltage);
-
-/**
- * regulator_get_min_support_voltage - standard get_min_supporting_volt()
- *
- * @rdev: Regulator to operate on
- *
- * This function returns minimum supporting voltage of given regulator.
- * When one regulator buck (or ldo) is shared between multiple consumers,
- * any consumer can get minimum supporting voltage from this function,
- * lust like sysfs supports min_uV.
- */
-int regulator_get_min_support_voltage(struct regulator *regulator)
-{
-	return regulator->rdev->constraints->min_uV;
-}
-EXPORT_SYMBOL_GPL(regulator_get_min_support_voltage);
-
 static int _regulator_call_set_voltage(struct regulator_dev *rdev,
 				       int min_uV, int max_uV,
 				       unsigned *selector)
@@ -2698,10 +2633,6 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 	old_max_uV = regulator->max_uV;
 	regulator->min_uV = min_uV;
 	regulator->max_uV = max_uV;
-
-	if ((rdev->open_count < rdev->constraints->expected_consumer)
-			&& rdev->constraints->expected_consumer)
-		goto out;
 
 	ret = regulator_check_consumers(rdev, &min_uV, &max_uV);
 	if (ret < 0)
@@ -3813,7 +3744,7 @@ scrub:
 	if (rdev->supply)
 		_regulator_put(rdev->supply);
 	regulator_ena_gpio_free(rdev);
-	kfree(rdev->constraints);
+
 wash:
 	device_unregister(&rdev->dev);
 	/* device core frees rdev */

@@ -464,7 +464,7 @@ static int macb_halt_tx(struct macb *bp)
 		if (!(status & MACB_BIT(TGO)))
 			return 0;
 
-		usleep_range(10, 250);
+		udelay(250);
 	} while (time_before(halt_time, timeout));
 
 	return -ETIMEDOUT;
@@ -1776,6 +1776,9 @@ static struct net_device_stats *gem_get_stats(struct macb *bp)
 {
 	struct gem_stats *hwstat = &bp->hw_stats.gem;
 	struct net_device_stats *nstat = &bp->stats;
+
+	if (!netif_running(bp->dev))
+		return nstat;
 
 	gem_update_stats(bp);
 

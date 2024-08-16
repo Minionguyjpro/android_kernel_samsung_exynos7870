@@ -431,7 +431,6 @@ static int cpu_psci_cpu_disable(unsigned int cpu)
 
 static void cpu_psci_cpu_die(unsigned int cpu)
 {
-	int ret;
 	/*
 	 * There are no known implementations of PSCI actually using the
 	 * power state field, pass a sensible default for now.
@@ -440,14 +439,13 @@ static void cpu_psci_cpu_die(unsigned int cpu)
 		.type = PSCI_POWER_STATE_TYPE_POWER_DOWN,
 	};
 
-	ret = psci_ops.cpu_off(state);
-
-	pr_crit("unable to power off CPU%u (%d)\n", cpu, ret);
+	psci_ops.cpu_off(state);
 }
 
 static int cpu_psci_cpu_kill(unsigned int cpu)
 {
-	int err, i;
+	int err;
+	unsigned long start, end;
 
 	if (!psci_ops.affinity_info)
 		return 1;
@@ -457,16 +455,18 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 	 * while it is dying. So, try again a few times.
 	 */
 
-	for (i = 0; i < 10; i++) {
+	start = jiffies;
+	end = start + msecs_to_jiffies(100);
+	do {
 		err = psci_ops.affinity_info(cpu_logical_map(cpu), 0);
 		if (err == PSCI_0_2_AFFINITY_LEVEL_OFF) {
-			pr_info("CPU%d killed.\n", cpu);
+			pr_info("CPU%d killed (polled %d ms)\n", cpu,
+				jiffies_to_msecs(jiffies - start));
 			return 1;
 		}
 
-		msleep(10);
-		pr_info("Retrying again to check for CPU kill\n");
-	}
+		usleep_range(100, 1000);
+	} while (time_before(jiffies, end));
 
 	pr_warn("CPU%d may not have shut down cleanly (AFFINITY_INFO reports %d)\n",
 			cpu, err);
@@ -483,58 +483,16 @@ static int psci_suspend_finisher(unsigned long index)
 				    virt_to_phys(cpu_resume));
 }
 
-/**
- * Ideally, we hope that PSCI framework cover the all power states, but it
- * is not correspond on some platforms. Below function supports extra power
- * state that PSCI cannot be handled.
- */
-static int psci_suspend_customized_finisher(unsigned long index)
-{
-	struct psci_power_state state = {
-			.id = 0,
-			.type = 0,
-			.affinity_level = 0,
-	};
-
-	switch (index) {
-	case PSCI_CLUSTER_SLEEP:
-		state.affinity_level = 1;
-		break;
-	case PSCI_SYSTEM_IDLE:
-		state.id = 1;
-		break;
-	case PSCI_SYSTEM_IDLE_CLUSTER_SLEEP:
-		state.id = 1;
-		state.affinity_level = 1;
-		break;
-	case PSCI_SYSTEM_SLEEP:
-		state.affinity_level = 3;
-		break;
-	case PSCI_SYSTEM_CP_CALL:
-		state.affinity_level = 1;
-		break;
-	default:
-		panic("Unsupported psci state, index = %ld\n", index);
-		break;
-	};
-
-	return psci_ops.cpu_suspend(state, virt_to_phys(cpu_resume));
-}
-
 static int __maybe_unused cpu_psci_cpu_suspend(unsigned long index)
 {
 	int ret;
 	struct psci_power_state *state = __get_cpu_var(psci_power_state);
-
 	/*
 	 * idle state index 0 corresponds to wfi, should never be called
 	 * from the cpu_suspend operations
 	 */
 	if (WARN_ON_ONCE(!index))
 		return -EINVAL;
-
-	if (unlikely(index >= PSCI_UNUSED_INDEX))
-		return __cpu_suspend(index, psci_suspend_customized_finisher);
 
 	if (state[index - 1].type == PSCI_POWER_STATE_TYPE_STANDBY)
 		ret = psci_ops.cpu_suspend(state[index - 1], 0);
@@ -548,8 +506,6 @@ const struct cpu_operations cpu_psci_ops = {
 	.name		= "psci",
 #ifdef CONFIG_CPU_IDLE
 	.cpu_init_idle	= cpu_psci_cpu_init_idle,
-#endif
-#ifdef CONFIG_ARM64_CPU_SUSPEND
 	.cpu_suspend	= cpu_psci_cpu_suspend,
 #endif
 	.cpu_init	= cpu_psci_cpu_init,

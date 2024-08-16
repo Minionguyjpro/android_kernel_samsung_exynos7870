@@ -22,7 +22,6 @@
 #include <linux/sched.h>
 #include <linux/scatterlist.h>
 #include <linux/vmalloc.h>
-#include <linux/highmem.h>
 #include "ion.h"
 #include "ion_priv.h"
 
@@ -39,7 +38,7 @@ void *ion_heap_map_kernel(struct ion_heap *heap,
 	struct page **tmp = pages;
 
 	if (!pages)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	if (buffer->flags & ION_FLAG_CACHED)
 		pgprot = PAGE_KERNEL;
@@ -106,12 +105,12 @@ int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
 
 static int ion_heap_clear_pages(struct page **pages, int num, pgprot_t pgprot)
 {
-	void *addr = vm_map_ram(pages, num, -1, pgprot);
+	void *addr = vmap(pages, num, VM_MAP, pgprot);
 
 	if (!addr)
 		return -ENOMEM;
 	memset(addr, 0, PAGE_SIZE * num);
-	vm_unmap_ram(addr, num);
+	vunmap(addr);
 
 	return 0;
 }
@@ -133,23 +132,8 @@ static int ion_heap_sglist_zero(struct scatterlist *sgl, unsigned int nents,
 			p = 0;
 		}
 	}
-
-	while (p-- > 0) {
-		void *va = kmap(pages[p]);
-
-		/* skip clear if kmap failed because this is not a core job */
-		if (!va)
-			break;
-		clear_page(va);
-#ifdef CONFIG_ARM64
-		if (pgprot == pgprot_writecombine(PAGE_KERNEL))
-			__flush_dcache_area(va, PAGE_SIZE);
-#else
-		if (pgprot == pgprot_writecombine(PAGE_KERNEL))
-			dmac_flush_range(va, va + PAGE_SIZE);
-#endif
-		kunmap(pages[p]);
-	}
+	if (p)
+		ret = ion_heap_clear_pages(pages, p, pgprot);
 
 	return ret;
 }
@@ -158,20 +142,13 @@ int ion_heap_buffer_zero(struct ion_buffer *buffer)
 {
 	struct sg_table *table = buffer->sg_table;
 	pgprot_t pgprot;
-	int ret;
-
-	ION_EVENT_BEGIN();
 
 	if (buffer->flags & ION_FLAG_CACHED)
 		pgprot = PAGE_KERNEL;
 	else
 		pgprot = pgprot_writecombine(PAGE_KERNEL);
 
-	ret = ion_heap_sglist_zero(table->sgl, table->nents, pgprot);
-
-	ION_EVENT_CLEAR(buffer, ION_EVENT_DONE());
-
-	return ret;
+	return ion_heap_sglist_zero(table->sgl, table->nents, pgprot);
 }
 
 int ion_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot)
@@ -328,8 +305,6 @@ static unsigned long ion_heap_shrink_scan(struct shrinker *shrinker,
 
 	if (heap->ops->shrink)
 		freed += heap->ops->shrink(heap, sc->gfp_mask, to_scan);
-		
-	trace_ion_shrink(sc->nr_to_scan, freed);
 	return freed;
 }
 
@@ -349,7 +324,7 @@ struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 	switch (heap_data->type) {
 	case ION_HEAP_TYPE_SYSTEM_CONTIG:
 		pr_err("%s: Heap type is disabled: %d\n", __func__,
-			heap_data->type);
+		       heap_data->type);
 		return ERR_PTR(-EINVAL);
 	case ION_HEAP_TYPE_SYSTEM:
 		heap = ion_system_heap_create(heap_data);
@@ -389,7 +364,7 @@ void ion_heap_destroy(struct ion_heap *heap)
 	switch (heap->type) {
 	case ION_HEAP_TYPE_SYSTEM_CONTIG:
 		pr_err("%s: Heap type is disabled: %d\n", __func__,
-			heap->type);
+		       heap->type);
 		break;
 	case ION_HEAP_TYPE_SYSTEM:
 		ion_system_heap_destroy(heap);

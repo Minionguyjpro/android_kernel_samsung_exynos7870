@@ -20,6 +20,7 @@
 #include <linux/page_cgroup.h>
 
 #include <asm/pgtable.h>
+#include "internal.h"
 
 /*
  * swapper_space is a fiction, retained to simplify the path through
@@ -330,7 +331,7 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		/*
 		 * call radix_tree_preload() while we can wait.
 		 */
-		err = radix_tree_maybe_preload(gfp_mask & GFP_KERNEL);
+		err = radix_tree_maybe_preload(gfp_mask & GFP_RECLAIM_MASK);
 		if (err)
 			break;
 
@@ -391,7 +392,6 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	return found_page;
 }
 
-#ifdef CONFIG_SWAP_ENABLE_READAHEAD
 static unsigned long swapin_nr_pages(unsigned long offset)
 {
 	static unsigned long prev_offset;
@@ -435,7 +435,6 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 
 	return pages;
 }
-#endif
 
 /**
  * swapin_readahead - swap in pages in hope we need them soon
@@ -459,7 +458,6 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 			struct vm_area_struct *vma, unsigned long addr)
 {
-#ifdef CONFIG_SWAP_ENABLE_READAHEAD
 	struct page *page;
 	unsigned long entry_offset = swp_offset(entry);
 	unsigned long offset = entry_offset;
@@ -492,6 +490,5 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
 skip:
-#endif
 	return read_swap_cache_async(entry, gfp_mask, vma, addr);
 }

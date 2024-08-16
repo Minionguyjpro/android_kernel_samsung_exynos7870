@@ -635,7 +635,8 @@ extern unsigned long devm_get_free_pages(struct device *dev,
 					 gfp_t gfp_mask, unsigned int order);
 extern void devm_free_pages(struct device *dev, unsigned long addr);
 
-void __iomem *devm_ioremap_resource(struct device *dev, struct resource *res);
+void __iomem *devm_ioremap_resource(struct device *dev,
+				    const struct resource *res);
 
 /* allows to add/remove a custom action to devres stack */
 int devm_add_action(struct device *dev, void (*action)(void *), void *data);
@@ -717,6 +718,7 @@ struct acpi_dev_node {
  * @iommu_group: IOMMU group the device belongs to.
  *
  * @offline_disabled: If set, the device is permanently online.
+ * @offline:	Set after successful invocation of bus type's .offline().
  *
  * At the lowest level, every device in a Linux system is represented by an
  * instance of struct device. The device structure contains the information
@@ -794,6 +796,7 @@ struct device {
 	struct iommu_group	*iommu_group;
 
 	bool			offline_disabled:1;
+	bool			offline:1;
 };
 
 static inline struct device *kobj_to_dev(struct kobject *kobj)
@@ -1162,8 +1165,11 @@ do {									\
 		dev_printk(KERN_DEBUG, dev, fmt, ##__VA_ARGS__);	\
 } while (0)
 #else
-#define dev_dbg_ratelimited(dev, fmt, ...)			\
-	no_printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
+#define dev_dbg_ratelimited(dev, fmt, ...)				\
+do {									\
+	if (0)								\
+		dev_printk(KERN_DEBUG, dev, fmt, ##__VA_ARGS__);	\
+} while (0)
 #endif
 
 #ifdef VERBOSE_DEBUG
