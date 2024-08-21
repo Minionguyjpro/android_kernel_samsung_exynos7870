@@ -905,18 +905,6 @@ static void process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 				fc->async_dio = 1;
 			if (arg->flags & FUSE_WRITEBACK_CACHE)
 				fc->writeback_cache = 1;
-			if (arg->flags & FUSE_SHORTCIRCUIT) {
-				fc->writeback_cache = 0;
-				fc->shortcircuit_io = 1;
-				pr_info("FUSE: SHORTCIRCUIT enabled [%s : %d]!\n",
-					current->comm, current->pid);
-			}
-			if (arg->flags & FUSE_RESERVE_SPACE) {
-				fc->reserved_space_mb = arg->reserved_space_mb;
-				pr_info("FUSE: RESERVE_SPACE enabled [%s : %d]! %u\n",
-						current->comm, current->pid,
-						arg->reserved_space_mb);
-			}
 			if (arg->time_gran && arg->time_gran <= 1000000000)
 				fc->sb->s_time_gran = arg->time_gran;
 		} else {
@@ -1137,6 +1125,7 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
  err_put_conn:
 	fuse_bdi_destroy(fc);
 	fuse_conn_put(fc);
+	sb->s_fs_info = NULL;
  err_fput:
 	fput(file);
  err:

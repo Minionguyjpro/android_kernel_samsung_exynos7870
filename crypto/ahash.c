@@ -84,24 +84,20 @@ static int hash_walk_new_entry(struct crypto_hash_walk *walk)
 int crypto_hash_walk_done(struct crypto_hash_walk *walk, int err)
 {
 	unsigned int alignmask = walk->alignmask;
-	unsigned int nbytes = walk->entrylen;
-
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
 
 	walk->data -= walk->offset;
 
-	if (nbytes && walk->offset & alignmask && !err) {
+	if (walk->entrylen && (walk->offset & alignmask) && !err) {
+		unsigned int nbytes;
+
 		walk->offset = ALIGN(walk->offset, alignmask + 1);
-		walk->data += walk->offset;
-
-		nbytes = min(nbytes,
-			     ((unsigned int)(PAGE_SIZE)) - walk->offset);
-		walk->entrylen -= nbytes;
-
-		return nbytes;
+		nbytes = min(walk->entrylen,
+			     (unsigned int)(PAGE_SIZE - walk->offset));
+		if (nbytes) {
+			walk->entrylen -= nbytes;
+			walk->data += walk->offset;
+			return nbytes;
+		}
 	}
 
 	if (walk->flags & CRYPTO_ALG_ASYNC)
@@ -118,7 +114,7 @@ int crypto_hash_walk_done(struct crypto_hash_walk *walk, int err)
 	if (err)
 		return err;
 
-	if (nbytes) {
+	if (walk->entrylen) {
 		walk->offset = 0;
 		walk->pg++;
 		return hash_walk_next(walk);
@@ -136,12 +132,6 @@ EXPORT_SYMBOL_GPL(crypto_hash_walk_done);
 int crypto_hash_walk_first(struct ahash_request *req,
 			   struct crypto_hash_walk *walk)
 {
-
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
-
 	walk->total = req->nbytes;
 
 	if (!walk->total) {
@@ -182,11 +172,6 @@ int crypto_hash_walk_first_compat(struct hash_desc *hdesc,
 				  struct crypto_hash_walk *walk,
 				  struct scatterlist *sg, unsigned int len)
 {
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
-
 	walk->total = len;
 
 	if (!walk->total) {
@@ -382,11 +367,6 @@ static int crypto_ahash_op(struct ahash_request *req,
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	unsigned long alignmask = crypto_ahash_alignmask(tfm);
 
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
-
 	if ((unsigned long)req->result & alignmask)
 		return ahash_op_unaligned(req, op);
 
@@ -448,8 +428,6 @@ static void ahash_def_finup_done1(struct crypto_async_request *req, int err)
 	if (err == -EINPROGRESS) {
 		ahash_notify_einprogress(areq);
 		return;
-			ahash_notify_einprogress(areq);
-			return;
 	}
 
 	areq->base.flags &= ~CRYPTO_TFM_REQ_MAY_SLEEP;
@@ -457,7 +435,6 @@ static void ahash_def_finup_done1(struct crypto_async_request *req, int err)
 	err = ahash_def_finup_finish1(areq, err);
 	if (areq->priv)
 		return;
-			return;
 
 	areq->base.complete(&areq->base, err);
 }
@@ -494,11 +471,6 @@ static int crypto_ahash_init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_ahash *hash = __crypto_ahash_cast(tfm);
 	struct ahash_alg *alg = crypto_ahash_alg(hash);
-
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
 
 	hash->setkey = ahash_nosetkey;
 	hash->has_setkey = false;
@@ -632,11 +604,6 @@ int ahash_register_instance(struct crypto_template *tmpl,
 {
 	int err;
 
-#ifdef CONFIG_CRYPTO_FIPS
-	if (unlikely(in_fips_err()))
-		return -EACCES;
-#endif
-
 	err = ahash_prepare_alg(&inst->alg);
 	if (err)
 		return err;
@@ -669,6 +636,17 @@ struct hash_alg_common *ahash_attr_alg(struct rtattr *rta, u32 type, u32 mask)
 	return IS_ERR(alg) ? ERR_CAST(alg) : __crypto_hash_alg_common(alg);
 }
 EXPORT_SYMBOL_GPL(ahash_attr_alg);
+
+bool crypto_hash_alg_has_setkey(struct hash_alg_common *halg)
+{
+	struct crypto_alg *alg = &halg->base;
+
+	if (alg->cra_type != &crypto_ahash_type)
+		return crypto_shash_alg_has_setkey(__crypto_shash_alg(alg));
+
+	return __crypto_ahash_alg(alg)->setkey != NULL;
+}
+EXPORT_SYMBOL_GPL(crypto_hash_alg_has_setkey);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Asynchronous cryptographic hash type");

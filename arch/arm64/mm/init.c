@@ -114,11 +114,13 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 }
 
 #ifdef CONFIG_HAVE_ARCH_PFN_VALID
-#define PFN_MASK ((1UL << (64 - PAGE_SHIFT)) - 1)
-
 int pfn_valid(unsigned long pfn)
 {
-	return (pfn & PFN_MASK) == pfn && memblock_is_memory(pfn << PAGE_SHIFT);
+	phys_addr_t addr = pfn << PAGE_SHIFT;
+
+	if ((addr >> PAGE_SHIFT) != pfn)
+		return 0;
+	return memblock_is_memory(addr);
 }
 EXPORT_SYMBOL(pfn_valid);
 #endif
@@ -146,18 +148,10 @@ void __init arm64_memblock_init(void)
 	 * Register the kernel text, kernel data, initrd, and initial
 	 * pagetables with memblock.
 	 */
-	set_memsize_kernel_type(MEMSIZE_KERNEL_KERNEL);
 	memblock_reserve(__pa(_text), _end - _text);
-	set_memsize_kernel_type(MEMSIZE_KERNEL_STOP);
-	record_memsize_reserved("initmem", __pa(__init_begin),
-				__init_end - __init_begin, false, false);
 #ifdef CONFIG_BLK_DEV_INITRD
-	if (initrd_start) {
+	if (initrd_start)
 		memblock_reserve(__virt_to_phys(initrd_start), initrd_end - initrd_start);
-		record_memsize_reserved("initrd", __virt_to_phys(initrd_start),
-					initrd_end - initrd_start, false,
-					false);
-	}
 #endif
 
 	early_init_fdt_scan_reserved_mem();
@@ -168,7 +162,6 @@ void __init arm64_memblock_init(void)
 
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 	dma_contiguous_reserve(dma_phys_limit);
-	set_memsize_kernel_type(MEMSIZE_KERNEL_OTHERS);
 
 	memblock_allow_resize();
 	memblock_dump_all();
@@ -340,12 +333,6 @@ void free_initmem(void)
 	fixup_init();
 	free_initmem_default(0);
 	free_alternatives_memory();
-#ifdef CONFIG_TIMA_RKP
-#ifdef CONFIG_KNOX_KAP
-	if (boot_mode_security)
-#endif
-		rkp_call(RKP_DEF_INIT, 0, 0, 0, 0, 0);
-#endif
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD

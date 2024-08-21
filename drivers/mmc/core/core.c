@@ -73,16 +73,13 @@ static const unsigned freqs[] = { 400000, 300000, 200000, 100000 };
 bool use_spi_crc = 1;
 module_param(use_spi_crc, bool, 0);
 
+/*
+ * Internal function. Schedule delayed work in the MMC work queue.
+ */
 static int mmc_schedule_delayed_work(struct delayed_work *work,
 				     unsigned long delay)
 {
-	/*
-	 * We use the system_freezable_wq, because of two reasons.
-	 * First, it allows several works (not the same work item) to be
-	 * executed simultaneously. Second, the queue becomes frozen when
-	 * userspace becomes frozen during system PM.
-	 */
-	return queue_delayed_work(system_freezable_wq, work, delay);
+	return queue_delayed_work(workqueue, work, delay);
 }
 
 /*
@@ -177,9 +174,10 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 				completion = ktime_get();
 				delta_us = ktime_us_delta(completion,
 							  mrq->io_start);
-				blk_update_latency_hist(&host->io_lat_s,
-					(mrq->data->flags & MMC_DATA_READ),
-					delta_us);
+				blk_update_latency_hist(
+					(mrq->data->flags & MMC_DATA_READ) ?
+					&host->io_lat_read :
+					&host->io_lat_write, delta_us);
 			}
 #endif
 			trace_mmc_blk_rw_end(cmd->opcode, cmd->arg, mrq->data);
@@ -340,12 +338,9 @@ EXPORT_SYMBOL(mmc_start_bkops);
 static void mmc_wait_data_done(struct mmc_request *mrq)
 {
 	struct mmc_context_info *context_info = &mrq->host->context_info;
-	unsigned long flags;
 
-	spin_lock_irqsave(&context_info->lock, flags);
 	context_info->is_done_rcv = true;
 	wake_up_interruptible(&context_info->wait);
-	spin_unlock_irqrestore(&context_info->lock, flags);
 }
 
 static void mmc_wait_done(struct mmc_request *mrq)
@@ -414,21 +409,21 @@ static int mmc_wait_for_data_req_done(struct mmc_host *host,
 				 context_info->is_new_req));
 		spin_lock_irqsave(&context_info->lock, flags);
 		context_info->is_waiting_last_req = false;
+		spin_unlock_irqrestore(&context_info->lock, flags);
 		if (context_info->is_done_rcv) {
 			context_info->is_done_rcv = false;
 			context_info->is_new_req = false;
-			spin_unlock_irqrestore(&context_info->lock, flags);
 			cmd = mrq->cmd;
 
 			if (!cmd->error || !cmd->retries ||
-					mmc_card_removed(host->card)) {
+			    mmc_card_removed(host->card)) {
 				err = host->areq->err_check(host->card,
-						host->areq);
+							    host->areq);
 				break; /* return err */
 			} else {
 				pr_info("%s: req failed (CMD%u): %d, retrying...\n",
-						mmc_hostname(host),
-						cmd->opcode, cmd->error);
+					mmc_hostname(host),
+					cmd->opcode, cmd->error);
 				cmd->retries--;
 				cmd->error = 0;
 				host->ops->request(host, mrq);
@@ -437,14 +432,11 @@ static int mmc_wait_for_data_req_done(struct mmc_host *host,
 		} else if (context_info->is_new_req) {
 			context_info->is_new_req = false;
 			if (!next_req) {
-				spin_unlock_irqrestore(&context_info->lock,
-							flags);
 				err = MMC_BLK_NEW_REQUEST;
 				break; /* return err */
 			}
 		}
-		spin_unlock_irqrestore(&context_info->lock, flags);
-	} /* while */
+	}
 	return err;
 }
 
@@ -618,10 +610,6 @@ EXPORT_SYMBOL(mmc_start_req);
  */
 void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)
 {
-#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-	if (mmc_bus_needs_resume(host))
-		mmc_resume_bus(host);
-#endif
 	__mmc_start_req(host, mrq);
 	mmc_wait_for_req_done(host, mrq);
 }
@@ -956,45 +944,6 @@ int __mmc_claim_host(struct mmc_host *host, atomic_t *abort)
 EXPORT_SYMBOL(__mmc_claim_host);
 
 /**
- *     mmc_try_claim_host - try exclusively to claim a host
- *        and keep trying for given time, with a gap of 10ms
- *     @host: mmc host to claim
- *     @dealy_ms: delay in ms
- *
- *     Returns %1 if the host is claimed, %0 otherwise.
- */
-int mmc_try_claim_host(struct mmc_host *host, unsigned int delay_ms)
-{
-	int claimed_host = 0;
-	unsigned long flags;
-	int retry_cnt = delay_ms/10;
-	bool pm = false;
-
-	do {
-		spin_lock_irqsave(&host->lock, flags);
-		if (!host->claimed || host->claimer == current) {
-			host->claimed = 1;
-			host->claimer = current;
-			host->claim_cnt += 1;
-			claimed_host = 1;
-			if (host->claim_cnt == 1)
-				pm = true;
-		}
-		spin_unlock_irqrestore(&host->lock, flags);
-		if (!claimed_host)
-			mmc_delay(10);
-	} while (!claimed_host && retry_cnt--);
-
-	if (pm)
-		pm_runtime_get_sync(mmc_dev(host));
-
-	if (host->ops->enable && claimed_host && host->claim_cnt == 1)
-		host->ops->enable(host);
-	return claimed_host;
-}
-EXPORT_SYMBOL(mmc_try_claim_host);
-
-/**
  *	mmc_release_host - release a host
  *	@host: mmc host to release
  *
@@ -1058,7 +1007,7 @@ static inline void mmc_set_ios(struct mmc_host *host)
 		"width %u timing %u\n",
 		 mmc_hostname(host), ios->clock, ios->bus_mode,
 		 ios->power_mode, ios->chip_select, ios->vdd,
-		 ios->bus_width, ios->timing);
+		 1 << ios->bus_width, ios->timing);
 
 	if (ios->clock > 0)
 		mmc_set_ungated(host);
@@ -1290,8 +1239,12 @@ int mmc_of_parse_voltage(struct device_node *np, u32 *mask)
 
 	voltage_ranges = of_get_property(np, "voltage-ranges", &num_ranges);
 	num_ranges = num_ranges / sizeof(*voltage_ranges) / 2;
-	if (!voltage_ranges || !num_ranges) {
-		pr_info("%s: voltage-ranges unspecified\n", np->full_name);
+	if (!voltage_ranges) {
+		pr_debug("%s: voltage-ranges unspecified\n", np->full_name);
+		return -EINVAL;
+	}
+	if (!num_ranges) {
+		pr_err("%s: voltage-ranges empty\n", np->full_name);
 		return -EINVAL;
 	}
 
@@ -1520,19 +1473,6 @@ int __mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage)
 	int err = 0;
 	int old_signal_voltage = host->ios.signal_voltage;
 
-#if defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) || \
-	defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) || \
-	defined(CONFIG_BCM43456) || defined(CONFIG_BCM43456_MODULE)
-	/* Some devices use only dedicated specific signaling level for
-	 * design reasons. MMC_CAP2_BROKEN_VOLTAGE flag is used when
-	 * there is no needs to change to any signaling level.
-	 */
-	if (host->caps2 & MMC_CAP2_BROKEN_VOLTAGE)
-		return 0;
-#endif /*(CONFIG_BCM43454) || (CONFIG_BCM43454_MODULE) || \
-	(CONFIG_BCM43455) || (CONFIG_BCM43455_MODULE) || \
-	(CONFIG_BCM43456) || (CONFIG_BCM43456_MODULE)*/
-
 	host->ios.signal_voltage = signal_voltage;
 	if (host->ops->start_signal_voltage_switch) {
 		mmc_host_clk_hold(host);
@@ -1554,19 +1494,6 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage, u32 ocr)
 	u32 clock;
 
 	BUG_ON(!host);
-
-#if defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) || \
-	defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) || \
-	defined(CONFIG_BCM43456) || defined(CONFIG_BCM43456_MODULE)
-	/* Some devices use only dedicated specific signaling level for
-	 * design reasons. MMC_CAP2_BROKEN_VOLTAGE flag is used when
-	 * there is no needs to change to any signaling level.
-	 */
-	if (host->caps2 & MMC_CAP2_BROKEN_VOLTAGE)
-		return 0;
-#endif /*(CONFIG_BCM43454) || (CONFIG_BCM43454_MODULE) || \
-	(CONFIG_BCM43455) || (CONFIG_BCM43455_MODULE) || \
-	(CONFIG_BCM43456) || (CONFIG_BCM43456_MODULE)*/
 
 	/*
 	 * Send CMD11 only if the request is to switch the card to
@@ -1805,37 +1732,6 @@ static inline void mmc_bus_put(struct mmc_host *host)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-int mmc_resume_bus(struct mmc_host *host)
-{
-	unsigned long flags;
-	int err = 0;
-	if (!mmc_bus_needs_resume(host))
-		return -EINVAL;
-
-	printk("%s: Starting deferred resume\n", mmc_hostname(host));
-	wake_lock(&host->detect_wake_lock);
-	spin_lock_irqsave(&host->lock, flags);
-	host->bus_resume_flags &= ~MMC_BUSRESUME_NEEDS_RESUME;
-	host->rescan_disable = 0;
-	spin_unlock_irqrestore(&host->lock, flags);
-
-	mmc_bus_get(host);
-	if (host->bus_ops && !host->bus_dead) {
-		mmc_power_up(host, host->card->ocr);
-		BUG_ON(!host->bus_ops->resume);
-		err = host->bus_ops->resume(host);
-	}
-
-	mmc_bus_put(host);
-	spin_lock_irqsave(&host->lock, flags);
-	spin_unlock_irqrestore(&host->lock, flags);
-	wake_unlock(&host->detect_wake_lock);
-	printk("%s: Deferred resume completed, err : %d\n", mmc_hostname(host), err);
-	return 0;
-}
-
-EXPORT_SYMBOL(mmc_resume_bus);
-
 /*
  * Assign a mmc bus handler to a host. Only one bus handler may control a
  * host at any given time.
@@ -1901,9 +1797,6 @@ static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
 		pm_wakeup_event(mmc_dev(host), 5000);
 
 	host->detect_change = 1;
-	/* wake lock: 500ms */
-	if (!(host->caps & MMC_CAP_NONREMOVABLE))
-		wake_lock_timeout(&host->detect_wake_lock, HZ / 2);
 	mmc_schedule_delayed_work(&host->detect, delay);
 }
 
@@ -2291,12 +2184,10 @@ EXPORT_SYMBOL(mmc_can_discard);
 
 int mmc_can_sanitize(struct mmc_card *card)
 {
-#ifdef CONFIG_MMC_SANITIZE_ENABLE
 	if (!mmc_can_trim(card) && !mmc_can_erase(card))
 		return 0;
 	if (card->ext_csd.sec_feature_support & EXT_CSD_SEC_SANITIZE)
 		return 1;
-#endif /* CONFIG_MMC_SANITIZE_ENABLE*/
 	return 0;
 }
 EXPORT_SYMBOL(mmc_can_sanitize);
@@ -2571,10 +2462,6 @@ int _mmc_detect_card_removed(struct mmc_host *host)
 		pr_debug("%s: card removed too slowly\n", mmc_hostname(host));
 	}
 
-	if (ret && !strcmp("mmc1", mmc_hostname(host)) &&
-			host->ops->get_cd && host->ops->get_cd(host))
-		ret =0;
-
 	if (ret) {
 		mmc_card_set_removed(host->card);
 		pr_debug("%s: card remove detected\n", mmc_hostname(host));
@@ -2598,15 +2485,13 @@ int mmc_detect_card_removed(struct mmc_host *host)
 	 * The card will be considered unchanged unless we have been asked to
 	 * detect a change or host requires polling to provide card detection.
 	 */
-	if (!host->detect_change && !(host->caps & MMC_CAP_NEEDS_POLL) &&
-		!(host->caps2 & MMC_CAP2_DETECT_ON_ERR))
+	if (!host->detect_change && !(host->caps & MMC_CAP_NEEDS_POLL))
 		return ret;
 
 	host->detect_change = 0;
 	if (!ret) {
 		ret = _mmc_detect_card_removed(host);
-		if (ret && ((host->caps & MMC_CAP_NEEDS_POLL) ||
-			(host->caps2 & MMC_CAP2_DETECT_ON_ERR))) {
+		if (ret && (host->caps & MMC_CAP_NEEDS_POLL)) {
 			/*
 			 * Schedule a detect work as soon as possible to let a
 			 * rescan handle the card removal.
@@ -2625,7 +2510,7 @@ void mmc_rescan(struct work_struct *work)
 	struct mmc_host *host =
 		container_of(work, struct mmc_host, detect.work);
 	int i;
-        printk("%s ,Index:%s, rescan_disable:%d, rescan_entered:%d\n", __FUNCTION__,mmc_hostname(host),host->rescan_disable,host->rescan_entered);
+
 	if (host->trigger_card_event && host->ops->card_event) {
 		host->ops->card_event(host);
 		host->trigger_card_event = false;
@@ -2688,13 +2573,6 @@ void mmc_rescan(struct work_struct *work)
 	mmc_release_host(host);
 
  out:
-#ifdef CONFIG_MARVELL_DRIVERS
-	if (host->detect_complete)
-		complete(host->detect_complete);
-#endif
-	host->pm_progress = 0;
-	if (!host->rescan_disable)
-		wake_lock_timeout(&host->detect_wake_lock, HZ / 2);
 	if (host->caps & MMC_CAP_NEEDS_POLL)
 		mmc_schedule_delayed_work(&host->detect, HZ);
 }
@@ -2708,29 +2586,8 @@ void mmc_start_host(struct mmc_host *host)
 		mmc_power_off(host);
 	else
 		mmc_power_up(host, host->ocr_avail);
-#if defined(CONFIG_QCOM_WIFI) || defined(CONFIG_BCM4343)  || defined(CONFIG_BCM4343_MODULE) || \
-	defined(CONFIG_BCM43454)  || defined(CONFIG_BCM43454_MODULE) || \
-	defined(CONFIG_BCM43455)  || defined(CONFIG_BCM43455_MODULE) || \
-	defined(CONFIG_BCM43456)  || defined(CONFIG_BCM43456_MODULE)
-	if (!strcmp("mmc1", mmc_hostname(host))) {
-		printk("%s skip mmc_detect_change\n", mmc_hostname(host));
-	} else if (host->caps2 & MMC_CAP2_SKIP_INIT_SCAN) {
-		printk("%s skip mmc detect change\n", mmc_hostname(host));
-	} else {
-		mmc_gpiod_request_cd_irq(host);
-		_mmc_detect_change(host, 0, false);
-	}
-#else
-	if (host->caps2 & MMC_CAP2_SKIP_INIT_SCAN) {
-		printk("%s skip mmc detect change\n", mmc_hostname(host));
-	} else {
-		mmc_gpiod_request_cd_irq(host);
-		_mmc_detect_change(host, 0, false);
-	}
-#endif /* CONFIG_QCOM_WIFI || CONFIG_BCM4343 || CONFIG_BCM4343_MODULE || \
-	CONFIG_BCM43454 || CONFIG_BCM43454_MODULE || \
-	CONFIG_BCM43455 || CONFIG_BCM43455_MODULE || \
-	CONFIG_BCM43456 || CONFIG_BCM43456_MODULE */
+	mmc_gpiod_request_cd_irq(host);
+	_mmc_detect_change(host, 0, false);
 }
 
 void mmc_stop_host(struct mmc_host *host)
@@ -2859,10 +2716,6 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 	case PM_SUSPEND_PREPARE:
 	case PM_RESTORE_PREPARE:
 		spin_lock_irqsave(&host->lock, flags);
-		if (mmc_bus_needs_resume(host)) {
-			spin_unlock_irqrestore(&host->lock, flags);
-			break;
-		}
 		host->rescan_disable = 1;
 		spin_unlock_irqrestore(&host->lock, flags);
 		cancel_delayed_work_sync(&host->detect);
@@ -2870,18 +2723,19 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 		if (!host->bus_ops)
 			break;
 
-		/*
-		 * It is possible that the wake-lock has been acquired, since
-		 * its being suspended, release the wakelock
-		 */
-		if (wake_lock_active(&host->detect_wake_lock))
-			wake_unlock(&host->detect_wake_lock);
-
 		/* Validate prerequisites for suspend */
 		if (host->bus_ops->pre_suspend)
 			err = host->bus_ops->pre_suspend(host);
 		if (!err)
 			break;
+
+		if (!mmc_card_is_removable(host)) {
+			dev_warn(mmc_dev(host),
+				 "pre_suspend failed for non-removable host: "
+				 "%d\n", err);
+			/* Avoid removing non-removable hosts */
+			break;
+		}
 
 		/* Calling bus_ops->remove() with a claimed host can deadlock */
 		host->bus_ops->remove(host);
@@ -2899,9 +2753,6 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 		spin_lock_irqsave(&host->lock, flags);
 		host->rescan_disable = 0;
 		spin_unlock_irqrestore(&host->lock, flags);
-		/* SD sync mode will be enabled during pm_progress is set */
-		if (host->card && mmc_card_sd(host->card))
-			host->pm_progress = 1;
 		_mmc_detect_change(host, 0, false);
 
 	}
@@ -2974,25 +2825,6 @@ destroy_workqueue:
 
 	return ret;
 }
-#if defined(CONFIG_BCM4343) || defined(CONFIG_BCM4343_MODULE) || \
-	defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) || \
-	defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) || \
-	defined(CONFIG_BCM43456) || defined(CONFIG_BCM43456_MODULE)
-void mmc_ctrl_power(struct mmc_host *host, bool onoff)
-{
-	 if (!onoff) {
-		mmc_claim_host(host);
-                mmc_set_clock(host, host->f_init);
-		mmc_delay(1);
-		mmc_release_host(host);
-	 }
-}
-EXPORT_SYMBOL(mmc_ctrl_power);
-#endif /* CONFIG_BCM4343 || CONFIG_BCM4343_MODULE || \
-	  CONFIG_BCM43454 || CONFIG_BCM43454_MODULE || \
-	  CONFIG_BCM43455 || CONFIG_BCM43455_MODULE || \
-	  CONFIG_BCM43456 || CONFIG_BCM43456_MODULE */
-
 
 static void __exit mmc_exit(void)
 {
@@ -3007,8 +2839,14 @@ static ssize_t
 latency_hist_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
+	size_t written_bytes;
 
-	return blk_latency_hist_show(&host->io_lat_s, buf);
+	written_bytes = blk_latency_hist_show("Read", &host->io_lat_read,
+			buf, PAGE_SIZE);
+	written_bytes += blk_latency_hist_show("Write", &host->io_lat_write,
+			buf + written_bytes, PAGE_SIZE - written_bytes);
+
+	return written_bytes;
 }
 
 /*
@@ -3026,9 +2864,10 @@ latency_hist_store(struct device *dev, struct device_attribute *attr,
 
 	if (kstrtol(buf, 0, &value))
 		return -EINVAL;
-	if (value == BLK_IO_LAT_HIST_ZERO)
-		blk_zero_latency_hist(&host->io_lat_s);
-	else if (value == BLK_IO_LAT_HIST_ENABLE ||
+	if (value == BLK_IO_LAT_HIST_ZERO) {
+		memset(&host->io_lat_read, 0, sizeof(host->io_lat_read));
+		memset(&host->io_lat_write, 0, sizeof(host->io_lat_write));
+	} else if (value == BLK_IO_LAT_HIST_ENABLE ||
 		 value == BLK_IO_LAT_HIST_DISABLE)
 		host->latency_hist_enabled = value;
 	return count;

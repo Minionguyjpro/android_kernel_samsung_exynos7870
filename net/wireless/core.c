@@ -27,9 +27,6 @@
 #include "debugfs.h"
 #include "wext-compat.h"
 #include "rdev-ops.h"
-#if 1 /* 20151217 Temporal patch for page allocation fail when wifi on */
-#include <linux/vmalloc.h>
-#endif
 
 /* name for sysfs, %d is appended */
 #define PHY_NAME "phy"
@@ -89,13 +86,16 @@ struct wiphy *wiphy_idx_to_wiphy(int wiphy_idx)
 	return &rdev->wiphy;
 }
 
-int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
-			char *newname)
+static int cfg80211_dev_check_name(struct cfg80211_registered_device *rdev,
+				   const char *newname)
 {
 	struct cfg80211_registered_device *rdev2;
-	int wiphy_idx, taken = -1, result, digits;
+	int wiphy_idx, taken = -1, digits;
 
 	ASSERT_RTNL();
+
+	if (strlen(newname) > NL80211_WIPHY_NAME_MAXLEN)
+		return -EINVAL;
 
 	/* prohibit calling the thing phy%d when %d is not its number */
 	sscanf(newname, PHY_NAME "%d%n", &wiphy_idx, &taken);
@@ -112,15 +112,28 @@ int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
 			return -EINVAL;
 	}
 
-
-	/* Ignore nop renames */
-	if (strcmp(newname, dev_name(&rdev->wiphy.dev)) == 0)
-		return 0;
-
 	/* Ensure another device does not already have this name. */
 	list_for_each_entry(rdev2, &cfg80211_rdev_list, list)
-		if (strcmp(newname, dev_name(&rdev2->wiphy.dev)) == 0)
+		if (strcmp(newname, wiphy_name(&rdev2->wiphy)) == 0)
 			return -EINVAL;
+
+	return 0;
+}
+
+int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
+			char *newname)
+{
+	int result;
+
+	ASSERT_RTNL();
+
+	/* Ignore nop renames */
+	if (strcmp(newname, wiphy_name(&rdev->wiphy)) == 0)
+		return 0;
+
+	result = cfg80211_dev_check_name(rdev, newname);
+	if (result < 0)
+		return result;
 
 	result = device_rename(&rdev->wiphy.dev, newname);
 	if (result)
@@ -326,7 +339,8 @@ static void cfg80211_sched_scan_stop_wk(struct work_struct *work)
 
 /* exported functions */
 
-struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
+struct wiphy *wiphy_new_nm(const struct cfg80211_ops *ops, int sizeof_priv,
+			   const char *requested_name)
 {
 	static atomic_t wiphy_counter = ATOMIC_INIT(0);
 
@@ -344,11 +358,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 
 	alloc_size = sizeof(*rdev) + sizeof_priv;
 
-#if 1 /* 20151217 Temporal patch for page allocation fail when wifi on */
-	rdev = vzalloc(alloc_size);
-#else
 	rdev = kzalloc(alloc_size, GFP_KERNEL);
-#endif
 	if (!rdev)
 		return NULL;
 
@@ -359,11 +369,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 	if (unlikely(rdev->wiphy_idx < 0)) {
 		/* ugh, wrapped! */
 		atomic_dec(&wiphy_counter);
-#if 1 /* 20151217 Temporal patch for page allocation fail when wifi on */
-		vfree(rdev);
-#else
 		kfree(rdev);
-#endif
 		return NULL;
 	}
 
@@ -371,7 +377,37 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 	rdev->wiphy_idx--;
 
 	/* give it a proper name */
-	dev_set_name(&rdev->wiphy.dev, PHY_NAME "%d", rdev->wiphy_idx);
+	if (requested_name && requested_name[0]) {
+		int rv;
+
+		rtnl_lock();
+		rv = cfg80211_dev_check_name(rdev, requested_name);
+
+		if (rv < 0) {
+			rtnl_unlock();
+			goto use_default_name;
+		}
+
+		rv = dev_set_name(&rdev->wiphy.dev, "%s", requested_name);
+		rtnl_unlock();
+		if (rv)
+			goto use_default_name;
+	} else {
+		int rv;
+
+use_default_name:
+		/* NOTE:  This is *probably* safe w/out holding rtnl because of
+		 * the restrictions on phy names.  Probably this call could
+		 * fail if some other part of the kernel (re)named a device
+		 * phyX.  But, might should add some locking and check return
+		 * value, and use a different name if this one exists?
+		 */
+		rv = dev_set_name(&rdev->wiphy.dev, PHY_NAME "%d", rdev->wiphy_idx);
+		if (rv < 0) {
+			kfree(rdev);
+			return NULL;
+		}
+	}
 
 	INIT_LIST_HEAD(&rdev->wdev_list);
 	INIT_LIST_HEAD(&rdev->beacon_registrations);
@@ -407,11 +443,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 				   &rdev->rfkill_ops, rdev);
 
 	if (!rdev->rfkill) {
-#if 1 /* 20151217 Temporal patch for page allocation fail when wifi on */
-		vfree(rdev);
-#else
-		kfree(rdev);
-#endif
+		wiphy_free(&rdev->wiphy);
 		return NULL;
 	}
 
@@ -436,7 +468,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 
 	return &rdev->wiphy;
 }
-EXPORT_SYMBOL(wiphy_new);
+EXPORT_SYMBOL(wiphy_new_nm);
 
 static int wiphy_verify_combinations(struct wiphy *wiphy)
 {
@@ -774,11 +806,7 @@ void cfg80211_dev_free(struct cfg80211_registered_device *rdev)
 	}
 	list_for_each_entry_safe(scan, tmp, &rdev->bss_list, list)
 		cfg80211_put_bss(&rdev->wiphy, &scan->pub);
-#if 1 /* 20151217 Temporal patch for page allocation fail when wifi on */
-	vfree(rdev);
-#else
 	kfree(rdev);
-#endif
 }
 
 void wiphy_free(struct wiphy *wiphy)

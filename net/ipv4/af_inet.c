@@ -273,9 +273,6 @@ static int inet_create(struct net *net, struct socket *sock, int protocol,
 	int try_loading_module = 0;
 	int err;
 
-	if (protocol < 0 || protocol >= IPPROTO_MAX)
-		return -EINVAL;
-
 	if (!current_has_network())
 		return -EACCES;
 
@@ -405,6 +402,7 @@ out_rcu_unlock:
 	rcu_read_unlock();
 	goto out;
 }
+
 
 /*
  *	The peer socket should always be NULL (or else). When we call this
@@ -748,7 +746,6 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		 size_t size)
 {
 	struct sock *sk = sock->sk;
-	int err;
 
 	sock_rps_record_flow(sk);
 
@@ -757,9 +754,7 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	    inet_autobind(sk))
 		return -EAGAIN;
 
-    err = sk->sk_prot->sendmsg(iocb, sk, msg, size);
-
-    return err;
+	return sk->sk_prot->sendmsg(iocb, sk, msg, size);
 }
 EXPORT_SYMBOL(inet_sendmsg);
 
@@ -792,9 +787,8 @@ int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 
 	err = sk->sk_prot->recvmsg(iocb, sk, msg, size, flags & MSG_DONTWAIT,
 				   flags & ~MSG_DONTWAIT, &addr_len);
-	if (err >= 0) {
+	if (err >= 0)
 		msg->msg_namelen = addr_len;
-	}
 	return err;
 }
 EXPORT_SYMBOL(inet_recvmsg);
@@ -1313,6 +1307,7 @@ static struct sk_buff *inet_gso_segment(struct sk_buff *skb,
 		if (encap)
 			skb_reset_inner_headers(skb);
 		skb->network_header = (u8 *)iph - skb->head;
+		skb_reset_mac_len(skb);
 	} while ((skb = skb->next));
 
 out:

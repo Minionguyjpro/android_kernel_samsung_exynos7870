@@ -22,8 +22,6 @@
 #include <linux/pid_namespace.h>
 #include <linux/user_namespace.h>
 #include <linux/shmem_fs.h>
-#include <linux/task_integrity.h>
-#include <linux/proca.h>
 
 #include <asm/poll.h>
 #include <asm/siginfo.h>
@@ -115,6 +113,10 @@ void f_setown(struct file *filp, unsigned long arg, int force)
 	int who = arg;
 	type = PIDTYPE_PID;
 	if (who < 0) {
+		/* avoid overflow below */
+		if (who == INT_MIN)
+			return;
+
 		type = PIDTYPE_PGID;
 		who = -who;
 	}
@@ -332,23 +334,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	case F_GETPIPE_SZ:
 		err = pipe_fcntl(filp, cmd, arg);
 		break;
-#ifdef CONFIG_FIVE
-	case F_FIVE_SIGN:
-		err = five_fcntl_sign(filp,
-				(struct integrity_label __user *)arg);
-		break;
-	case F_FIVE_VERIFY_ASYNC:
-		err = five_fcntl_verify_async(filp);
-		break;
-	case F_FIVE_VERIFY_SYNC:
-		err = five_fcntl_verify_sync(filp);
-		break;
-#if defined(CONFIG_FIVE_PA_FEATURE) || defined(CONFIG_PROCA)
-	case F_FIVE_PA_SETXATTR:
-		err = proca_fcntl_setxattr(filp, (void __user *)arg);
-		break;
-#endif
-#endif
 	case F_ADD_SEALS:
 	case F_GET_SEALS:
 		err = shmem_fcntl(filp, cmd, arg);
@@ -759,15 +744,10 @@ static int __init fcntl_init(void)
 	 * Exceptions: O_NONBLOCK is a two bit define on parisc; O_NDELAY
 	 * is defined as O_NONBLOCK on some platforms and not on others.
 	 */
-	BUILD_BUG_ON(20 - 1 /* for O_RDONLY being 0 */ != HWEIGHT32(
-		O_RDONLY	| O_WRONLY	| O_RDWR	|
-		O_CREAT		| O_EXCL	| O_NOCTTY	|
-		O_TRUNC		| O_APPEND	| /* O_NONBLOCK	| */
-		__O_SYNC	| O_DSYNC	| FASYNC	|
-		O_DIRECT	| O_LARGEFILE	| O_DIRECTORY	|
-		O_NOFOLLOW	| O_NOATIME	| O_CLOEXEC	|
-		__FMODE_EXEC	| O_PATH	| __O_TMPFILE
-		));
+	BUILD_BUG_ON(21 - 1 /* for O_RDONLY being 0 */ !=
+		HWEIGHT32(
+			(VALID_OPEN_FLAGS & ~(O_NONBLOCK | O_NDELAY)) |
+			__FMODE_EXEC | __FMODE_NONOTIFY));
 
 	fasync_cache = kmem_cache_create("fasync_cache",
 		sizeof(struct fasync_struct), 0, SLAB_PANIC, NULL);
