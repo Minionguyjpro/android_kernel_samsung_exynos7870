@@ -45,6 +45,8 @@ jobs:
     - name: Release build
       uses: ncipollo/release-action@v1
       with:
-        artifacts: arch/arm64/boot/Image
+        artifacts: |
+          arch/arm64/boot/Image
+          arch/arm64/boot/Image.gz
         token: ${{ secrets.GITHUB_TOKEN }}
       continue-on-error: true
