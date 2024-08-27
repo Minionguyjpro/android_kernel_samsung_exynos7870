@@ -40,7 +40,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Image
-        path: arch/arm64/boot/Image
+        path: |
+          arch/arm64/boot/Image
+          arch/arm64/boot/Image.gz
 
     - name: Release build
       uses: ncipollo/release-action@v1
